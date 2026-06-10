@@ -1,0 +1,743 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Flink Feature Engineering Pipeline Observability</title>
+    <!-- Google Fonts -->
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;700&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg-dark: #0a0b0d;
+            --bg-card: rgba(18, 20, 26, 0.7);
+            --bg-card-border: rgba(255, 255, 255, 0.08);
+            --text-main: #f3f4f6;
+            --text-muted: #9ca3af;
+            --accent-cyan: #00f2fe;
+            --accent-purple: #9d4edd;
+            --accent-red: #ff3366;
+            --accent-green: #00e676;
+            --font-family: 'Outfit', sans-serif;
+            --font-mono: 'JetBrains Mono', monospace;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            background-color: var(--bg-dark);
+            color: var(--text-main);
+            font-family: var(--font-family);
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            overflow-x: hidden;
+            background-image: 
+                radial-gradient(circle at 10% 20%, rgba(0, 242, 254, 0.05) 0%, transparent 40%),
+                radial-gradient(circle at 90% 80%, rgba(157, 78, 221, 0.05) 0%, transparent 40%);
+        }
+
+        header {
+            padding: 1.5rem 2rem;
+            border-bottom: 1px solid var(--bg-card-border);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            background: rgba(10, 11, 13, 0.8);
+            backdrop-filter: blur(10px);
+            position: sticky;
+            top: 0;
+            z-index: 100;
+        }
+
+        .header-title h1 {
+            font-size: 1.5rem;
+            font-weight: 700;
+            background: linear-gradient(90deg, var(--accent-cyan), var(--accent-purple));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            letter-spacing: -0.5px;
+        }
+
+        .header-title p {
+            font-size: 0.8rem;
+            color: var(--text-muted);
+            margin-top: 2px;
+        }
+
+        .status-badge {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 0.85rem;
+            background: rgba(255, 255, 255, 0.04);
+            padding: 6px 14px;
+            border-radius: 20px;
+            border: 1px solid var(--bg-card-border);
+        }
+
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background-color: var(--accent-red);
+            box-shadow: 0 0 10px var(--accent-red);
+        }
+
+        .status-dot.connected {
+            background-color: var(--accent-green);
+            box-shadow: 0 0 10px var(--accent-green);
+            animation: pulse 2s infinite;
+        }
+
+        @keyframes pulse {
+            0% { transform: scale(1); opacity: 1; }
+            50% { transform: scale(1.2); opacity: 0.6; }
+            100% { transform: scale(1); opacity: 1; }
+        }
+
+        main {
+            flex: 1;
+            padding: 2rem;
+            max-width: 1400px;
+            width: 100%;
+            margin: 0 auto;
+            display: flex;
+            flex-direction: column;
+            gap: 2rem;
+        }
+
+        /* Metrics grid */
+        .metrics-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+            gap: 1.5rem;
+        }
+
+        .metric-card {
+            background: var(--bg-card);
+            border: 1px solid var(--bg-card-border);
+            border-radius: 16px;
+            padding: 1.5rem;
+            backdrop-filter: blur(12px);
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            position: relative;
+            overflow: hidden;
+            transition: border-color 0.3s ease;
+        }
+
+        .metric-card:hover {
+            border-color: rgba(0, 242, 254, 0.3);
+        }
+
+        .metric-card::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 4px;
+            background: linear-gradient(90deg, var(--accent-cyan), var(--accent-purple));
+        }
+
+        .metric-card.red::before {
+            background: var(--accent-red);
+        }
+
+        .metric-header {
+            font-size: 0.85rem;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            color: var(--text-muted);
+            font-weight: 600;
+        }
+
+        .metric-value {
+            font-size: 2.25rem;
+            font-weight: 700;
+            font-family: var(--font-mono);
+            color: var(--text-main);
+        }
+
+        .metric-footer {
+            font-size: 0.8rem;
+            color: var(--text-muted);
+            margin-top: 5px;
+        }
+
+        /* Freshness specific styling */
+        .freshness-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            font-size: 0.9rem;
+            padding: 4px 0;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.03);
+        }
+        .freshness-item:last-child {
+            border-bottom: none;
+        }
+        .freshness-val {
+            font-family: var(--font-mono);
+            font-weight: 600;
+        }
+
+        /* Two columns layout */
+        .workspace-grid {
+            display: grid;
+            grid-template-columns: 350px 1fr;
+            gap: 2rem;
+        }
+
+        @media (max-width: 900px) {
+            .workspace-grid {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        .card {
+            background: var(--bg-card);
+            border: 1px solid var(--bg-card-border);
+            border-radius: 16px;
+            padding: 1.5rem;
+            backdrop-filter: blur(12px);
+            display: flex;
+            flex-direction: column;
+            gap: 1.5rem;
+        }
+
+        .card-title {
+            font-size: 1.1rem;
+            font-weight: 700;
+            border-bottom: 1px solid var(--bg-card-border);
+            padding-bottom: 0.75rem;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+
+        .search-box {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        .search-box label {
+            font-size: 0.85rem;
+            color: var(--text-muted);
+            font-weight: 600;
+        }
+
+        .input-group {
+            display: flex;
+            gap: 8px;
+        }
+
+        input[type="text"] {
+            flex: 1;
+            background: rgba(255, 255, 255, 0.03);
+            border: 1px solid var(--bg-card-border);
+            border-radius: 8px;
+            padding: 10px 14px;
+            color: var(--text-main);
+            font-family: var(--font-family);
+            font-size: 0.95rem;
+            outline: none;
+            transition: all 0.3s;
+        }
+
+        input[type="text"]:focus {
+            border-color: var(--accent-cyan);
+            background: rgba(255, 255, 255, 0.06);
+            box-shadow: 0 0 10px rgba(0, 242, 254, 0.15);
+        }
+
+        button {
+            background: linear-gradient(135deg, var(--accent-cyan), #00b8d4);
+            color: #000;
+            border: none;
+            border-radius: 8px;
+            padding: 10px 18px;
+            font-weight: 700;
+            font-family: var(--font-family);
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+
+        button:hover {
+            opacity: 0.9;
+            box-shadow: 0 0 15px rgba(0, 242, 254, 0.4);
+        }
+
+        .shortcuts {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+
+        .shortcuts-title {
+            font-size: 0.8rem;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            color: var(--text-muted);
+        }
+
+        .shortcut-list {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+        }
+
+        .badge-btn {
+            background: rgba(255, 255, 255, 0.04);
+            border: 1px solid var(--bg-card-border);
+            color: var(--text-main);
+            padding: 6px 12px;
+            border-radius: 6px;
+            font-size: 0.8rem;
+            font-family: var(--font-mono);
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .badge-btn:hover {
+            background: rgba(255, 255, 255, 0.08);
+            border-color: var(--accent-purple);
+        }
+
+        /* Table styles */
+        .table-container {
+            width: 100%;
+            overflow-x: auto;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            text-align: left;
+            font-size: 0.95rem;
+        }
+
+        th {
+            color: var(--text-muted);
+            font-weight: 600;
+            font-size: 0.85rem;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            padding: 12px 16px;
+            border-bottom: 1px solid var(--bg-card-border);
+        }
+
+        td {
+            padding: 14px 16px;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.03);
+            vertical-align: middle;
+        }
+
+        tr:last-child td {
+            border-bottom: none;
+        }
+
+        .feature-name-col {
+            font-family: var(--font-mono);
+            font-weight: 700;
+            color: var(--accent-cyan);
+        }
+
+        .feature-value-col {
+            font-family: var(--font-mono);
+            font-weight: 600;
+        }
+
+        .time-col {
+            font-size: 0.8rem;
+            color: var(--text-muted);
+        }
+
+        /* Pulse Animation on updates */
+        @keyframes flash-update {
+            0% { background-color: rgba(0, 242, 254, 0.15); }
+            100% { background-color: transparent; }
+        }
+
+        .row-updated {
+            animation: flash-update 1.2s ease-out;
+        }
+
+        .placeholder-text {
+            color: var(--text-muted);
+            text-align: center;
+            padding: 3rem 0;
+            font-style: italic;
+        }
+
+        /* Console styling */
+        .console-card {
+            background: rgba(8, 9, 11, 0.9);
+            border: 1px solid var(--bg-card-border);
+            border-radius: 12px;
+            padding: 1rem;
+            font-family: var(--font-mono);
+            font-size: 0.8rem;
+            max-height: 200px;
+            overflow-y: auto;
+            display: flex;
+            flex-direction: column-reverse;
+            gap: 4px;
+        }
+
+        .console-line {
+            display: flex;
+            gap: 10px;
+        }
+
+        .console-time {
+            color: var(--accent-purple);
+            flex-shrink: 0;
+        }
+
+        .console-msg {
+            color: var(--text-main);
+            word-break: break-all;
+        }
+    </style>
+</head>
+<body>
+
+    <header>
+        <div class="header-title">
+            <h1>Real-Time ML Feature Engineering Pipeline</h1>
+            <p>Observability & Monitoring Console</p>
+        </div>
+        <div class="status-badge">
+            <div id="statusDot" class="status-dot"></div>
+            <span id="statusText">Connecting</span>
+        </div>
+    </header>
+
+    <main>
+        <!-- Metrics Summary Grid -->
+        <section class="metrics-grid">
+            <!-- Metric Card 1: Late Events -->
+            <div class="metric-card red">
+                <div class="metric-header">Late Events Dropped</div>
+                <div class="metric-value" id="droppedCounter">0</div>
+                <div class="metric-footer">Events violating the 30s watermark</div>
+            </div>
+
+            <!-- Metric Card 2: Watermark Lag -->
+            <div class="metric-card">
+                <div class="metric-header">Watermark Lag (Simulated)</div>
+                <div class="metric-value" id="watermarkLag">--</div>
+                <div class="metric-footer" id="watermarkTime">Watermark: None received</div>
+            </div>
+
+            <!-- Metric Card 3: Feature Freshness -->
+            <div class="metric-card">
+                <div class="metric-header">Feature Freshness (Agg)</div>
+                <div class="freshness-item">
+                    <span>click_rate:</span>
+                    <span class="freshness-val" id="freshnessClick">--</span>
+                </div>
+                <div class="freshness-item">
+                    <span>engagement_rate:</span>
+                    <span class="freshness-val" id="freshnessEngagement">--</span>
+                </div>
+                <div class="metric-footer">Time elapsed since latest stream updates</div>
+            </div>
+        </section>
+
+        <!-- Dynamic Entity Search Workspace -->
+        <section class="workspace-grid">
+            <!-- Sidebar lookup panel -->
+            <div class="card">
+                <div class="card-title">Entity Lookup</div>
+                
+                <div class="search-box">
+                    <label for="entityInput">User or Content ID</label>
+                    <div class="input-group">
+                        <input type="text" id="entityInput" placeholder="e.g. usr_002, cnt_010" value="usr_002">
+                        <button onclick="searchEntity()">View</button>
+                    </div>
+                </div>
+
+                <div class="shortcuts">
+                    <span class="shortcuts-title">Evaluator Quick-Links</span>
+                    <div class="shortcut-list">
+                        <button class="badge-btn" onclick="quickSearch('usr_002')">usr_002</button>
+                        <button class="badge-btn" onclick="quickSearch('usr_005')">usr_005</button>
+                        <button class="badge-btn" onclick="quickSearch('cnt_010')">cnt_010</button>
+                        <button class="badge-btn" onclick="quickSearch('cnt_015')">cnt_015</button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Feature tables Display -->
+            <div class="card">
+                <div class="card-title">
+                    <span>Feature Store Records: <span id="currentEntityTitle" style="color: var(--accent-cyan);">usr_002</span></span>
+                    <span style="font-size: 0.8rem; font-weight: normal; color: var(--text-muted);">Real-Time WebSocket Updates</span>
+                </div>
+
+                <div class="table-container">
+                    <table id="featuresTable">
+                        <thead>
+                            <tr>
+                                <th>Feature Name</th>
+                                <th>Feature Value</th>
+                                <th>Simulated Computed At</th>
+                                <th>Ingestion Age</th>
+                            </tr>
+                        </thead>
+                        <tbody id="featuresBody">
+                            <!-- Populated dynamically -->
+                            <tr>
+                                <td colspan="4" class="placeholder-text">Enter an entity ID to display features.</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </section>
+
+        <!-- Realtime Console log -->
+        <section class="card">
+            <div class="card-title">Real-Time Ingestion Logs</div>
+            <div class="console-card" id="consoleLogs">
+                <div class="console-line">
+                    <span class="console-time">SYSTEM</span>
+                    <span class="console-msg">Dashboard initialized. Connecting to WebSocket server...</span>
+                </div>
+            </div>
+        </section>
+    </main>
+
+    <script>
+        let ws;
+        let activeEntity = 'usr_002';
+        let state = {
+            features: {}, // entity -> feature_name -> { value, computed_at, received_at }
+            metrics: {
+                late_events_dropped: 0,
+                current_watermark: 0,
+                last_sim_time: 0
+            }
+        };
+
+        // Initialize WebSockets
+        function connectWS() {
+            const loc = window.location;
+            const wsUri = (loc.protocol === "https:" ? "wss://" : "ws://") + loc.host + "/ws";
+            
+            ws = new WebSocket(wsUri);
+
+            ws.onopen = () => {
+                document.getElementById('statusDot').className = 'status-dot connected';
+                document.getElementById('statusText').innerText = 'Connected';
+                addConsoleLog('SYSTEM', 'WebSocket connection established.');
+            };
+
+            ws.onclose = () => {
+                document.getElementById('statusDot').className = 'status-dot';
+                document.getElementById('statusText').innerText = 'Disconnected';
+                addConsoleLog('SYSTEM', 'WebSocket connection closed. Retrying in 3 seconds...');
+                setTimeout(connectWS, 3000);
+            };
+
+            ws.onmessage = (event) => {
+                const msg = JSON.parse(event.data);
+                
+                if (msg.type === 'state_dump') {
+                    state.features = msg.features;
+                    state.metrics = msg.metrics;
+                    updateMetricsPanel();
+                    renderFeatures();
+                    addConsoleLog('SYSTEM', 'Full state synchronized.');
+                } 
+                else if (msg.type === 'feature_update') {
+                    const { entity_id, feature_name, data } = msg;
+                    if (!state.features[entity_id]) {
+                        state.features[entity_id] = {};
+                    }
+                    state.features[entity_id][feature_name] = data;
+                    
+                    // Add to log console
+                    addConsoleLog('STREAM', `Received feature: ${entity_id} | ${feature_name} = ${typeof data.value === 'number' ? data.value.toFixed(4) : data.value}`);
+
+                    if (entity_id === activeEntity) {
+                        updateFeatureRow(feature_name, data);
+                    }
+                } 
+                else if (msg.type === 'metrics_update') {
+                    state.metrics = msg.metrics;
+                    updateMetricsPanel();
+                }
+            };
+        }
+
+        // Search features for entity
+        function searchEntity() {
+            const inputVal = document.getElementById('entityInput').value.trim();
+            if (inputVal) {
+                activeEntity = inputVal;
+                document.getElementById('currentEntityTitle').innerText = activeEntity;
+                renderFeatures();
+            }
+        }
+
+        function quickSearch(id) {
+            document.getElementById('entityInput').value = id;
+            searchEntity();
+        }
+
+        // Render features for activeEntity
+        function renderFeatures() {
+            const tbody = document.getElementById('featuresBody');
+            tbody.innerHTML = '';
+            
+            const entityFeatures = state.features[activeEntity];
+            
+            if (!entityFeatures || Object.keys(entityFeatures).length === 0) {
+                tbody.innerHTML = `<tr><td colspan="4" class="placeholder-text">No features computed yet for entity "${activeEntity}". Waiting for stream...</td></tr>`;
+                return;
+            }
+
+            for (const [name, record] of Object.entries(entityFeatures)) {
+                const tr = document.createElement('tr');
+                tr.id = `row-${name.replace(/:/g, '_')}`; // replace colon for valid CSS ID
+                
+                const val = typeof record.value === 'number' ? record.value.toFixed(4) : record.value;
+                const age = getAgeString(record.received_at);
+
+                tr.innerHTML = `
+                    <td class="feature-name-col">${name}</td>
+                    <td class="feature-value-col">${val}</td>
+                    <td class="time-col">${record.computed_at}</td>
+                    <td class="time-col freshness-timer" data-received="${record.received_at}">${age}</td>
+                `;
+                tbody.appendChild(tr);
+            }
+        }
+
+        // Update single table row on message update (avoid rebuilding table to prevent UI flicker)
+        function updateFeatureRow(name, record) {
+            const safeName = name.replace(/:/g, '_');
+            let tr = document.getElementById(`row-${safeName}`);
+            const val = typeof record.value === 'number' ? record.value.toFixed(4) : record.value;
+            const age = getAgeString(record.received_at);
+
+            if (tr) {
+                // Flash animation
+                tr.classList.remove('row-updated');
+                void tr.offsetWidth; // trigger reflow
+                tr.classList.add('row-updated');
+                
+                tr.cells[1].innerText = val;
+                tr.cells[2].innerText = record.computed_at;
+                tr.cells[3].innerText = age;
+                tr.cells[3].setAttribute('data-received', record.received_at);
+            } else {
+                // Row doesn't exist yet, render entire table
+                renderFeatures();
+            }
+        }
+
+        // Metrics Panel update
+        function updateMetricsPanel() {
+            // 1. Late events dropped
+            document.getElementById('droppedCounter').innerText = state.metrics.late_events_dropped;
+
+            // 2. Watermark Lag
+            const wm = state.metrics.current_watermark;
+            const lastSim = state.metrics.last_sim_time;
+            
+            if (wm > 0 && lastSim > 0) {
+                const lagMs = lastSim - wm;
+                const lagSec = (lagMs / 1000).toFixed(1);
+                document.getElementById('watermarkLag').innerText = `${lagSec}s`;
+                
+                const wmDate = new Date(wm);
+                document.getElementById('watermarkTime').innerText = `Flink WM: ${wmDate.toISOString().substring(11, 19)}Z`;
+            } else {
+                document.getElementById('watermarkLag').innerText = '--';
+                document.getElementById('watermarkTime').innerText = wm > 0 ? `Watermark: ${new Date(wm).toISOString().substring(11, 19)}Z` : 'Watermark: None received';
+            }
+        }
+
+        // Utility: age text
+        function getAgeString(timestampSec) {
+            if (!timestampSec) return '--';
+            const elapsed = Math.floor(timeNowSec() - timestampSec);
+            if (elapsed < 1) return 'Just now';
+            return `${elapsed}s ago`;
+        }
+
+        function timeNowSec() {
+            return Date.now() / 1000;
+        }
+
+        // Console Log Logger
+        function addConsoleLog(source, msg) {
+            const consoleCard = document.getElementById('consoleLogs');
+            const date = new Date();
+            const timeStr = date.toTimeString().split(' ')[0];
+
+            const div = document.createElement('div');
+            div.className = 'console-line';
+            div.innerHTML = `
+                <span class="console-time">[${timeStr}] [${source}]</span>
+                <span class="console-msg">${msg}</span>
+            `;
+            consoleCard.appendChild(div);
+
+            // Cap logs count to 50
+            if (consoleCard.children.length > 50) {
+                consoleCard.removeChild(consoleCard.firstChild);
+            }
+        }
+
+        // Periodic Refresh timers (every 1 second)
+        setInterval(() => {
+            // Update age timers on feature rows
+            const timers = document.querySelectorAll('.freshness-timer');
+            timers.forEach(td => {
+                const rx = parseFloat(td.getAttribute('data-received'));
+                if (rx) {
+                    td.innerText = getAgeString(rx);
+                }
+            });
+
+            // Update aggregated feature freshness metrics
+            updateAggregateFreshness();
+        }, 1000);
+
+        function updateAggregateFreshness() {
+            let lastClickTime = null;
+            let lastEngagementTime = null;
+
+            // Scan cache for click_rate and engagement_rate received times
+            for (const [entityId, features] of Object.entries(state.features)) {
+                if (features['click_rate']) {
+                    const rx = features['click_rate'].received_at;
+                    if (!lastClickTime || rx > lastClickTime) lastClickTime = rx;
+                }
+                if (features['engagement_rate']) {
+                    const rx = features['engagement_rate'].received_at;
+                    if (!lastEngagementTime || rx > lastEngagementTime) lastEngagementTime = rx;
+                }
+            }
+
+            document.getElementById('freshnessClick').innerText = getAgeString(lastClickTime);
+            document.getElementById('freshnessEngagement').innerText = getAgeString(lastEngagementTime);
+        }
+
+        // Start connection
+        connectWS();
+    </script>
+</body>
+</html>
