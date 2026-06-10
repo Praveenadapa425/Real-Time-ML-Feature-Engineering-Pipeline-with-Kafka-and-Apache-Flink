@@ -1,0 +1,98 @@
+# ==========================================
+# Java / Maven Ignored Files
+# ==========================================
+target/
+*.class
+*.jar
+*.war
+*.ear
+*.nar
+*.zip
+*.tar.gz
+
+# ==========================================
+# Python Ignored Files
+# ==========================================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual Environments
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# ==========================================
+# IDEs and Text Editors
+# ==========================================
+# IntelliJ IDEA
+.idea/
+*.iml
+*.iws
+*.ipr
+
+# Eclipse
+.metadata/
+.classpath
+.project
+.settings/
+*.launch
+
+# VS Code
+.vscode/
+
+# Sublimetext
+*.sublime-project
+*.sublime-workspace
+
+# ==========================================
+# OS / System Specific Files
+# ==========================================
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# ==========================================
+# Flink Runtime/Checkpoints Local Directory
+# ==========================================
+.flink/
+flink-checkpoints/
+flink-savepoints/
+htmlcov/
+.tox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+.hypothesis/
+.pytest_cache/
