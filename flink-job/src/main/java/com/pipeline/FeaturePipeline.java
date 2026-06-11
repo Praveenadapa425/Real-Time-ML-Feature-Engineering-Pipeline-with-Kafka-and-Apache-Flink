@@ -6,11 +6,14 @@ import com.pipeline.models.FeatureRecord;
 import com.pipeline.models.MetricRecord;
 import org.apache.flink.api.common.eventtime.*;
 import org.apache.flink.api.common.functions.AggregateFunction;
+import org.apache.flink.api.common.functions.FlatMapFunction;
 import org.apache.flink.api.common.functions.MapFunction;
 import org.apache.flink.api.common.serialization.SimpleStringSchema;
 import org.apache.flink.api.common.typeinfo.TypeInformation;
-import org.apache.flink.connector.base.delivery.DeliveryGuarantee;
+import org.apache.flink.connector.base.DeliveryGuarantee;
 import org.apache.flink.connector.kafka.sink.KafkaRecordSerializationSchema;
+import org.apache.flink.types.Row;
+import org.apache.flink.types.RowKind;
 import org.apache.flink.connector.kafka.sink.KafkaSink;
 import org.apache.flink.connector.kafka.source.KafkaSource;
 import org.apache.flink.connector.kafka.source.enumerator.initializer.OffsetsInitializer;
@@ -179,22 +182,38 @@ public class FeaturePipeline {
 
         // Perform Stream-Table join and window aggregation in SQL
         Table affinityTable = tEnv.sqlQuery(
-                "SELECT\n" +
-                "  u.userId AS entity_id,\n" +
-                "  CONCAT('category_affinity_score:', c.category) AS feature_name,\n" +
-                "  CAST(COUNT(*) AS DOUBLE) AS feature_value,\n" +
-                "  DATE_FORMAT(TUMBLE_END(TO_TIMESTAMP_LTZ(CAST(u.timestampEpoch AS BIGINT), 3), INTERVAL '1' HOUR), 'yyyy-MM-dd''T''HH:mm:ss''Z''') AS computed_at\n" +
-                "FROM user_events_view u\n" +
-                "JOIN content_metadata_table c ON u.contentId = c.content_id\n" +
-                "GROUP BY\n" +
-                "  u.userId,\n" +
-                "  c.category,\n" +
-                "  TUMBLE(TO_TIMESTAMP_LTZ(CAST(u.timestampEpoch AS BIGINT), 3), INTERVAL '1' HOUR)"
+            "SELECT\n" +
+            "  u.userId AS entity_id,\n" +
+            "  CONCAT('category_affinity_score:', c.category) AS feature_name,\n" +
+            "  CAST(COUNT(*) AS DOUBLE) AS feature_value,\n" +
+            "  CAST(CURRENT_TIMESTAMP AS STRING) AS computed_at\n" +
+            "FROM user_events_view u\n" +
+            "JOIN content_metadata_table c ON u.contentId = c.content_id\n" +
+            "GROUP BY\n" +
+            "  u.userId,\n" +
+            "  c.category"
         );
 
-        // Convert the SQL Table back to a DataStream of FeatureRecords
-        DataStream<FeatureRecord> affinityFeatures = tEnv.toDataStream(affinityTable, FeatureRecord.class)
-                .name("CategoryAffinityFeaturesStream");
+        // Convert the SQL Table back to a Changelog DataStream of Rows
+        DataStream<Row> affinityChangelog = tEnv.toChangelogStream(affinityTable);
+
+        // Filter out retracts and format as FeatureRecord stream
+        DataStream<FeatureRecord> affinityFeatures = affinityChangelog
+                .flatMap(new FlatMapFunction<Row, FeatureRecord>() {
+                    private static final long serialVersionUID = 1L;
+                    @Override
+                    public void flatMap(Row row, Collector<FeatureRecord> out) throws Exception {
+                        RowKind kind = row.getKind();
+                        if (kind == RowKind.INSERT || kind == RowKind.UPDATE_AFTER) {
+                            String entityId = (String) row.getField(0);
+                            String featureName = (String) row.getField(1);
+                            Double featureValue = (Double) row.getField(2);
+                            String computedAt = (String) row.getField(3);
+                            out.collect(new FeatureRecord(entityId, featureName, featureValue, computedAt));
+                        }
+                    }
+                })
+                .name("ChangelogToFeatureRecord");
 
         // 10. Merge all Feature Streams
         DataStream<FeatureRecord> allFeatures = userFeatures

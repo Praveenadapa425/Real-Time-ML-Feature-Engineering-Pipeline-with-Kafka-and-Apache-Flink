@@ -1,54 +1,125 @@
 # Batch vs. Streaming Divergence
 
-### Divergence Analysis
-When running the same calculations on a streaming pipeline versus a static batch process (e.g., Pandas or Spark on historical event files), slight divergences in feature values (`click_rate`, `avg_dwell_time`, `engagement_rate`, and `category_affinity_score`) can occur. In a test run:
-*   **Batch Result:** A batch process processed 1,000 events sequentially. All events (including the 5% late events) were sorted and grouped into their exact hourly windows based on their timestamps.
-*   **Streaming Result:** The Flink pipeline processed the same stream. Events that arrived late (delay $>35$ seconds) after their corresponding hourly window was closed by the 30-second watermark were dropped. 
-*   **Impact:** The streaming `click_rate` and `avg_dwell_time` for users with late clicks shifted slightly compared to the batch results because the late clicks were excluded from the streaming window.
+## Divergence Analysis
 
-### Reasons for Differences
+The same feature calculations can produce slightly different results when executed in a streaming system versus a batch processing system.
 
-#### 1. Windowing Semantics
-*   **Batch:** Batch computations partition the entire dataset statically. There is no concept of a "closed window" during processing; every data point is eventually matched to its hour partition.
-*   **Streaming:** Streaming windows are transient. Flink holds the state for a 1-hour tumbling window in memory. When the watermark passes the window boundary ($T_{\text{end}}$), Flink fires the window trigger, emits the feature record, and **purges the window state** to reclaim memory. Any late event targeting that window arriving after the purge cannot be integrated.
+For comparison, the streaming pipeline continuously processed events from Kafka using Apache Flink, while a hypothetical batch process would read the complete historical dataset after all events were generated and compute the same feature values.
 
-#### 2. Event Ordering & Latency
-In streaming, events arrive over the network out-of-order. If a user event arrives at Flink before the corresponding content metadata has been ingested from the `content-metadata` topic, the Flink SQL lookup join fails (or yields null), causing the event to be excluded from the `category_affinity_score`. In batch, the metadata is fully pre-loaded, preventing join misses.
+During testing, the producer generated both normal events and deliberately delayed events. The streaming pipeline processed events according to event-time semantics and watermark progression, while a batch process would have access to all events before computing aggregates.
 
-#### 3. Late Data and Watermark Behavior
-In batch, the data boundary is absolute (the start and end of the dataset). In streaming, the data boundary is dynamic and driven by **watermarks**. If watermarks advance too quickly (e.g., due to a sudden burst of events with advanced timestamps), windows close early, causing normal out-of-order events to be categorized as late and dropped, increasing divergence.
+As a result, small differences may occur in feature values such as:
 
----
+* `click_rate`
+* `avg_dwell_time`
+* `engagement_rate`
+* `category_affinity_score`
+
+These differences are expected and are a natural consequence of streaming window execution and late-event handling.
+
+## Reasons for Differences
+
+### 1. Windowing Semantics
+
+In batch processing, the entire dataset is available before computation begins. Events can be sorted and assigned to their correct windows without any concern for arrival order.
+
+In the streaming pipeline, Flink maintains state for active windows and emits results when event-time windows are finalized. Once a window is closed, the state associated with that window is released. Events arriving after window closure may not contribute to previously emitted results.
+
+### 2. Event Ordering
+
+Streaming systems process events as they arrive. Network delays, producer buffering, and partition ordering can cause events to arrive out of order.
+
+Batch systems process a complete dataset where ordering can be reconstructed before aggregation. Because of this, batch results represent a fully materialized view of the data, whereas streaming results reflect the state of the system at the time windows are evaluated.
+
+### 3. Watermark Progression
+
+The streaming pipeline uses event-time processing with watermarks to determine when a window can be safely finalized.
+
+As watermarks advance, Flink assumes that events older than the watermark are unlikely to arrive. This enables low-latency feature generation but can introduce small differences compared to a batch process that waits for all data before computing results.
+
+## Impact on Machine Learning Features
+
+These divergences are generally small and represent a common trade-off in real-time systems.
+
+The benefit of streaming features is freshness. A recommendation model receiving features updated every few seconds or minutes can react to user behavior much faster than a batch system that updates features only periodically.
+
+For recommendation and personalization workloads, fresh features typically provide greater value than perfectly complete historical aggregates.
 
 # Late Event Handling
 
-### Watermark Strategy
-We configured Flink with a **30-second bounded out-of-orderness watermark strategy**:
+## Watermark Strategy
+
+The Flink pipeline is configured with a bounded out-of-orderness watermark strategy of exactly 30 seconds:
+
 ```java
 WatermarkStrategy.forBoundedOutOfOrderness(Duration.ofSeconds(30))
 ```
-This strategy tracks the maximum event timestamp ($T_{\text{max}}$) observed by each Flink subtask. The current watermark ($W$) is calculated as:
-$$W = T_{\text{max}} - 30\text{ seconds}$$
-This tells Flink: *"We assume no events will arrive with a timestamp older than $W$. We will allow up to 30 seconds of network delay or buffering. Once $W$ crosses a window's end time ($T_{\text{window\_end}}$), we finalize the window."*
 
-### Handling of 35–90s Delayed Events
-Our custom data producer is configured to inject late events with a delay of **35 to 90 seconds** relative to the current simulated clock.
-1.  **Watermark Violation:** Because the delays ($35\text{s} - 90\text{s}$) exceed Flink's 30-second out-of-orderness buffer, the timestamps of these events ($t_{\text{event}}$) are strictly less than the current watermark ($t_{\text{event}} < W$).
-2.  **State Eviction:** If the watermark $W$ has already advanced past the end of the window ($T_{\text{window\_end}}$) that $t_{\text{event}}$ belongs to, Flink identifies these events as late.
-3.  **Side Output Capture:** Instead of silently dropping them, the Flink job intercepts these late events using a side output (`LATE_USER_EVENTS_TAG` and `LATE_CONTENT_EVENTS_TAG`).
-4.  **Metric Logging:** The late event stream is mapped to a `MetricRecord` with a score value of `1.0` and sinked to the `flink-metrics` Kafka topic.
+The watermark is calculated from the highest event timestamp observed by the stream processor.
 
-### Evidence of Late Event Handling
-*   **Producer Console Logs:** The producer logs late events with explicit delays:
-    ```
-    2026-06-10 17:50:03,450 [INFO] [LATE EVENT DETECTED] User: usr_007 | Sim Time: 17:50:03 | Event Time: 17:49:11 (Delay: 52s)
-    ```
-*   **Flink TaskManager Logs:** Flink log outputs print the routing of late events:
-    ```
-    17:50:03.480 [WARN] org.apache.flink.streaming.runtime.operators.windowing.WindowOperator - Late event arrived for closed window: UserEvent{userId='usr_007', contentId='cnt_012', eventType='click', timestamp='2026-06-10T17:49:11Z'}
-    ```
-*   **Dashboard Visualizer:** The "Late Events Dropped" counter on the dashboard UI increments in real-time as these metrics are parsed from the `flink-metrics` topic, verifying the end-to-end telemetry pipeline.
+Conceptually:
 
-### Arriving After Window Closure
-If an event arrives after its window is closed and no side output is configured, Flink **drops the event immediately**. 
-*   **Implication for ML Models:** If a model relies on fresh feature values, dropping late events means the features served in the feature store will miss these interactions. However, this is a necessary trade-off: keeping windows open indefinitely to accommodate late data would require Flink to store window state forever, leading to memory exhaustion (OOM errors) and unsustainable latency.
+Watermark = Maximum Event Timestamp Seen - 30 Seconds
+
+This configuration allows Flink to tolerate events arriving up to 30 seconds late while still producing deterministic event-time results.
+
+## Handling of Delayed Events
+
+The producer intentionally generates approximately 5% of events with timestamps delayed between 35 and 90 seconds relative to the simulated event clock.
+
+This behavior is used to test the pipeline's handling of out-of-order and delayed data.
+
+When delayed events arrive:
+
+1. Flink compares the event timestamp with the current watermark.
+2. Events that arrive within the allowed watermark tolerance may still be incorporated into active windows.
+3. Events that arrive after the relevant window has already been finalized are treated as late events.
+4. The pipeline routes these events through dedicated late-event handling logic and publishes operational metrics to the `flink-metrics` topic.
+
+## Evidence of Late Event Handling
+
+### Producer Logs
+
+The producer continuously generated delayed events during testing.
+
+Example:
+
+```text
+[LATE EVENT DETECTED] User: usr_011 | Sim Time: 10:30:38 | Event Time: 10:29:35 (Delay: 63s)
+```
+
+Additional examples observed during execution included delays of 52 seconds, 69 seconds, and 75 seconds.
+
+### Watermark Metrics
+
+The `flink-metrics` Kafka topic continuously emitted watermark metrics such as:
+
+```json
+{
+  "metric_name": "current_watermark",
+  "metric_value": 1781356915999
+}
+```
+
+These metrics confirmed that event-time processing and watermark advancement were functioning correctly throughout the execution of the Flink job.
+
+### Dashboard Verification
+
+The observability dashboard successfully displayed:
+
+* Current watermark information
+* Watermark lag calculations
+* Feature freshness metrics
+* Real-time feature updates from the `feature-store` topic
+
+This verified the end-to-end telemetry flow from Flink to Kafka and ultimately to the dashboard.
+
+## Arriving After Window Closure
+
+If an event arrives after its corresponding window has already been finalized and the watermark has advanced beyond that window, the event can no longer modify the previously emitted aggregate.
+
+This behavior is intentional.
+
+Keeping windows open indefinitely would increase state size, memory usage, and processing latency. Watermarks provide a controlled trade-off between completeness and responsiveness.
+
+For machine learning systems, this trade-off enables near real-time feature generation while maintaining predictable resource consumption and processing performance.

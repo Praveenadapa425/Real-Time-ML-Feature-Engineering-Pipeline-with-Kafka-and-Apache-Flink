@@ -1,7 +1,8 @@
 package com.pipeline.models;
 
-import com.fasterxml.jackson.annotation.JsonProperty;
 import java.io.Serializable;
+
+import com.fasterxml.jackson.annotation.JsonProperty;
 
 public class FeatureRecord implements Serializable {
     private static final long serialVersionUID = 1L;
@@ -13,14 +14,14 @@ public class FeatureRecord implements Serializable {
     private String featureName;
 
     @JsonProperty("feature_value")
-    private Object featureValue;
+    private Double featureValue;
 
     @JsonProperty("computed_at")
     private String computedAt;
 
     public FeatureRecord() {}
 
-    public FeatureRecord(String entityId, String featureName, Object featureValue, String computedAt) {
+    public FeatureRecord(String entityId, String featureName, Double featureValue, String computedAt) {
         this.entityId = entityId;
         this.featureName = featureName;
         this.featureValue = featureValue;
@@ -33,8 +34,8 @@ public class FeatureRecord implements Serializable {
     public String getFeatureName() { return featureName; }
     public void setFeatureName(String featureName) { this.featureName = featureName; }
 
-    public Object getFeatureValue() { return featureValue; }
-    public void setFeatureValue(Object featureValue) { this.featureValue = featureValue; }
+    public Double getFeatureValue()     { return featureValue; }
+    public void setFeatureValue(Double featureValue) { this.featureValue = featureValue; }
 
     public String getComputedAt() { return computedAt; }
     public void setComputedAt(String computedAt) { this.computedAt = computedAt; }
